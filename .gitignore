@@ -1,0 +1,25 @@
+# Scientific inputs, intermediate arrays, trained models, and results
+/FINAL/
+/NETCDF/
+/NPZ/
+*.nc
+*.npz
+*.npy
+*.joblib
+*.pkl
+
+# Cluster logs and Python/Jupyter caches
+logs/
+LOG_HIST/
+slurm-*.out
+*.err
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# Local environment and agent configuration
+.env
+.env.*
+.venv/
+.agents/
+.codex/

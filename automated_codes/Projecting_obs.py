@@ -1,0 +1,235 @@
+import os
+import gc
+import sys
+import warnings
+warnings.filterwarnings("ignore")
+
+import numpy as np
+import xarray as xr
+import joblib
+import gsw
+
+# =========================================================
+# Inputs
+# =========================================================
+# Example:
+# python Projecting_obs.py RF 0
+#
+# argv[1] = algorithm: "RF" or "NN"
+# argv[2] = model index i
+# argv[3] = ensemble index j
+# argv[4] = basin index k
+
+alg = sys.argv[1]
+k   = int(sys.argv[2])
+
+# ----------------------------
+# Paths
+# ----------------------------
+save_dir = '/scratch/gpfs/GEOCLIM/LRGROUP/db9274/Analysis/Variability_quantification/Ito_2024_ML_algorithm/ML4O2_Dhruv_potden/NETCDF/OSD_CTD_Argo/'
+subsampled_dir = '/scratch/gpfs/GEOCLIM/LRGROUP/db9274/Analysis/Variability_quantification/Ito_2022_OI_algorithm/Preprocessing_RB23/Monthly_subsampled_fields_1965_2021/'
+out_np_dir = '/scratch/gpfs/GEOCLIM/LRGROUP/db9274/Analysis/Variability_quantification/Ito_2024_ML_algorithm/ML4O2_Dhruv_potden/NPZ/'
+dirfin = '/scratch/gpfs/GEOCLIM/LRGROUP/db9274/Analysis/Variability_quantification/Ito_2024_ML_algorithm/ML4O2_Dhruv_potden/FINAL/'
+CMIP_full_fields_dir = '/scratch/gpfs/GEOCLIM/LRGROUP/db9274/Analysis/Variability_quantification/Ito_2022_OI_algorithm/Preprocessing_RB23/Monthly_full_fields_1965_2021/'
+
+
+# ----------------------------
+# Metadata
+# ----------------------------
+
+basin_name = ['Atlantic', 'Pacific', 'Indian', 'Southern', 'Arctic']
+basin_nums = [1, 2, 3, 10, 11]
+
+start_time, end_time = '1965-01-01', '2017-12-30'
+
+# --------------------------------------------------
+# Helpers
+# --------------------------------------------------
+
+def fix_lon_0_360(da, lon_name="x"):
+    lon = da[lon_name]
+    lon_fixed = (lon % 360)
+    return da.assign_coords({lon_name: lon_fixed}).sortby(lon_name)
+
+def potential_density_from_pt(salt, theta):
+    """Potential density anomaly sigma0 from practical salinity and potential temperature."""
+    lev2, lat2 = xr.broadcast(theta["lev"], theta["y"])
+    pressure = xr.apply_ufunc(gsw.p_from_z, -lev2, lat2)
+    pressure, lon, lat = xr.broadcast(pressure, theta["x"], theta["y"])
+    absolute_salinity = xr.apply_ufunc(
+        gsw.SA_from_SP,
+        salt,
+        pressure,
+        lon,
+        lat,
+        dask="allowed",
+    )
+    conservative_temp = xr.apply_ufunc(
+        gsw.CT_from_pt,
+        absolute_salinity,
+        theta,
+        dask="allowed",
+    )
+    sigma0 = xr.apply_ufunc(
+        gsw.density.sigma0,
+        absolute_salinity,
+        conservative_temp,
+        dask="allowed",
+    )
+    return sigma0.rename("sigma0")
+
+def load_full_temperature_and_salinity():
+    oxygen_file_path = os.path.join(subsampled_dir, 'o2/Oxygen_obs_OSD_CTD_Argo.nc')
+    oxygen_s = xr.open_dataset(oxygen_file_path)['o2'].sel(time = slice(start_time, end_time))
+    oxygen_s = fix_lon_0_360(oxygen_s)
+    oxygen_s = oxygen_s.where(oxygen_s >= 0)
+    oxygen_s.load();
+
+    temperature_file_path = CMIP_full_fields_dir + f'thetao/thetao_1x1bin_ORAS5.nc'
+    thetao_s = xr.open_dataset(temperature_file_path)['thetao'].sel(time = slice(start_time, end_time))
+    thetao_s = fix_lon_0_360(thetao_s)
+    thetao_s['time'] = oxygen_s['time']
+    thetao_s = thetao_s.interp(x = oxygen_s.x, y = oxygen_s.y, lev = oxygen_s.lev, kwargs = {'fill_value': 'extrapolate'})
+
+    salinity_file_path = CMIP_full_fields_dir + f'so/so_1x1bin_ORAS5.nc'
+    so_s = xr.open_dataset(salinity_file_path)['so'].sel(time = slice(start_time, end_time))
+    so_s = fix_lon_0_360(so_s)
+    so_s['time'] = oxygen_s['time']
+    so_s = so_s.interp(x = oxygen_s.x, y = oxygen_s.y, lev = oxygen_s.lev, kwargs = {'fill_value': 'extrapolate'})
+
+    temperature = thetao_s.resample(time = '1YS').mean('time')
+    salt = so_s.resample(time = '1YS').mean('time')
+    sigma0 = potential_density_from_pt(salt, temperature).load()
+
+    return temperature, salt, sigma0
+
+def build_feature_stack(temperature_basin, salt_basin, sigma0_basin):
+    needed_dims = ("time", "lev", "y", "x")
+
+    valid4 = np.isfinite(temperature_basin) & np.isfinite(salt_basin) & np.isfinite(sigma0_basin)
+    valid1 = valid4.stack(sample=needed_dims).compute()
+
+    keep = np.flatnonzero(valid1.values)
+    if keep.size == 0:
+        raise ValueError("No valid predictor samples found.")
+
+    t_1d = temperature_basin.stack(sample=needed_dims).isel(sample=keep)
+    s_1d = salt_basin.stack(sample=needed_dims).isel(sample=keep)
+    sigma0_1d = sigma0_basin.stack(sample=needed_dims).isel(sample=keep)
+
+    year = t_1d["time"].dt.year.astype("float32")
+
+    T = np.asarray(t_1d.astype("float32").values)
+    S = np.asarray(s_1d.astype("float32").values)
+    sigma0 = np.asarray(sigma0_1d.astype("float32").values)
+    lon = np.asarray(t_1d["x"].astype("float32").values)
+    lat = np.asarray(t_1d["y"].astype("float32").values)
+    dep = np.asarray(t_1d["lev"].astype("float32").values)
+    year = np.asarray(year.values, dtype="float32")
+
+    X_raw = np.vstack([S, T, sigma0, lon, lat, dep, year]).astype("float32")
+
+    coords = {
+        "sample": t_1d["sample"]   # keep the real MultiIndex coordinate
+    }
+    return X_raw, coords
+
+def standardize_predictors(X_raw, Xm, Xstd):
+    return ((X_raw.T - Xm) / Xstd).astype("float32")
+
+def reconstruct_to_grid(pred_1d, coords, template):
+    pred_flat = xr.DataArray(
+        pred_1d.astype("float32"),
+        dims=("sample",),
+        coords={"sample": coords["sample"]}
+    )
+    pred_unstack = pred_flat.unstack("sample").transpose("time", "lev", "y", "x")
+    return pred_unstack.reindex_like(template)
+
+def project_model_to_grid(k, alg, model_path, params_path):
+    model = 'Observations'
+    basin = basin_name[k]
+
+    regr = joblib.load(model_path)
+    params = np.load(params_path)
+
+    Xm = params["Xm"].astype("float32")
+    Xstd = params["Xstd"].astype("float32")
+    ym = float(np.ravel(params["ym"])[0])
+    ystd = float(np.ravel(params["ystd"])[0])
+
+    temperature, salt, sigma0 = load_full_temperature_and_salinity()
+
+    basin_mask = xr.open_dataset(
+        '/scratch/gpfs/GEOCLIM/LRGROUP/db9274/Analysis/Variability_quantification/Ito_2022_OI_algorithm/optint_wod_o2/basin_mask_01.nc'
+    )["basin_mask"]
+    basin_mask = basin_mask.rename({'lon': 'x', 'lat': 'y', 'depth': 'lev'}).isel(lev = 0)
+    basin_mask = fix_lon_0_360(basin_mask)
+
+    sector = (basin_mask == (basin_nums[k]))
+    temperature_basin = temperature.where(sector)
+    salt_basin = salt.where(sector)
+    sigma0_basin = sigma0.where(sector)
+
+    X_raw, coords = build_feature_stack(temperature_basin, salt_basin, sigma0_basin)
+    X = standardize_predictors(X_raw, Xm, Xstd)
+
+    y_pred_std = regr.predict(X).astype("float32")
+    y_pred = (y_pred_std * ystd + ym).astype("float32")
+
+    template = xr.full_like(temperature_basin, np.nan, dtype=np.float32)
+    o2_pred = reconstruct_to_grid(y_pred, coords, template)
+    o2_pred.name = "o2"
+
+    o2_pred.attrs["long_name"] = "Projected dissolved oxygen"
+    o2_pred.attrs["algorithm"] = alg
+    o2_pred.attrs["model_name"] = model
+    o2_pred.attrs["basin"] = basin
+
+    fdir = os.path.join(dirfin, model)
+    os.makedirs(fdir, exist_ok=True)
+
+    out_file = os.path.join(
+        fdir,
+        f"projected_o2_{alg}_{basin}_{model}.nc"
+    )
+    o2_pred.to_netcdf(out_file)
+
+    del temperature, salt, sigma0, temperature_basin, salt_basin, sigma0_basin
+    del X_raw, X, y_pred_std, y_pred, o2_pred, regr, params
+    gc.collect()
+
+    return out_file
+
+# =========================================================
+# Main
+# =========================================================
+if __name__ == "__main__":
+
+    oxygen_obs_mask = xr.open_dataset('/scratch/gpfs/GEOCLIM/LRGROUP/db9274/Analysis/Variability_quantification/Ito_2022_OI_algorithm/' +
+                               'Preprocessing_RB23/Monthly_subsampled_fields_1965_2021/o2/Oxygen_obs_OSD_CTD_Argo.nc')['o2'].sel(time = slice(start_time, end_time)).resample(time='1YS').mean('time')
+    oxygen_obs_mask = fix_lon_0_360(oxygen_obs_mask, 'x').load();
+    
+    model = 'Observations'
+    basin = basin_name[k]
+
+    fdir = os.path.join(dirfin, model)
+
+    model_path = os.path.join(
+        fdir,
+        f"algorithm_{alg}_{basin}_{model}.joblib"
+    )
+
+    params_path = os.path.join(
+        fdir,
+        f"ML_params_{alg}_{basin}_{model}.npz"
+    )
+
+    print("Projecting:", model, basin)
+    print("Using model:", model_path)
+    print("Using params:", params_path)
+
+    out_file = project_model_to_grid(k, alg, model_path, params_path)
+
+    print("Projection complete.")
+    print("Saved to:", out_file)
