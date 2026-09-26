@@ -1,10 +1,10 @@
 # ML4O2 with potential density predictors
 
-Research scripts for reconstructing annual ocean oxygen fields using random forests (`RF`) and neural networks (`NN`). The workflows cover CMIP6 model experiments and observational reconstructions, including an EN4 variant.
+Scripts for reconstructing ocean oxygen fields using random forests (`RF`) and neural networks (`NN`). The workflows cover CMIP6 model experiments and observational reconstructions, including an EN4 variant.
 
-This gap-filling framework is inspired by Ito et al. (2024), [*Mapping Dissolved Oxygen Concentrations by Combining Shipboard and Argo Observations Using Machine Learning Algorithms*](https://doi.org/10.1029/2024JH000272). This implementation includes enhancements and adaptations to the training procedure, reconstruction time periods, and historical data inputs, along with potential density predictors and workflows for CMIP6 experiments and EN4-based observational reconstructions. The workflow and setup below describe the implementation in this repository.
+This gap-filling framework is inspired by Ito et al. (2024), [*Mapping Dissolved Oxygen Concentrations by Combining Shipboard and Argo Observations Using Machine Learning Algorithms*](https://doi.org/10.1029/2024JH000272). This implementation includes enhancements and adaptations to the training procedure, reconstruction time periods, and historical data inputs.
 
-The gap-filling framework is not limited to oxygen and can be extended to other biogeochemical (BGC) tracers by adapting the target observations, predictor variables, preprocessing, and validation to the tracer of interest. The scripts currently included in this repository implement oxygen reconstruction.
+The gap-filling framework is not limited to oxygen and can be extended to other biogeochemical tracers by adapting the target observations, predictor variables, preprocessing, and validation to the tracer of interest. The scripts currently included in this repository implement oxygen reconstruction.
 
 ## Workflow
 
@@ -13,8 +13,6 @@ The gap-filling framework is not limited to oxygen and can be extended to other 
 3. **Evaluating** selects hyperparameters from cross-validation metrics, fits the selected model to all available training samples, and saves the fitted model and scaling parameters. Scores from this final fit are in-sample scores.
 4. **Projecting** applies the fitted model and saved scaling parameters to gridded predictors and writes basin products.
 5. **Projection_merging.ipynb** combines basin products and inspects predictions and parameters. **CMIP6_models_variability_compute.ipynb** contains further model analysis.
-
-The quantity called `R2` in the scripts is squared Pearson correlation, rather than the residual-based coefficient of determination. Cross-validation RMSE is computed on standardized oxygen, so it is dimensionless.
 
 ## Files
 
@@ -30,13 +28,13 @@ The quantity called `R2` in the scripts is squared Pearson correlation, rather t
 
 ## Requirements and local setup
 
-The scripts use NumPy, xarray, scikit-learn, GSW, joblib, and (in the CMIP6 projection script) xmip. NetCDF access and chunked xarray operations also require an appropriate NetCDF backend and Dask. Notebook dependencies must be checked separately. An exact, tested environment specification is not yet included.
+The scripts use NumPy, xarray, scikit-learn, GSW, joblib, and (in the CMIP6 projection script) xmip.
 
-These scripts currently use absolute paths on the author's HPC cluster. Before running elsewhere:
+These scripts currently use absolute paths on Princeton's Tiger3 cluster. Before running elsewhere:
 
 - Update input, output, basin-mask, and helper-module paths in the Python scripts and notebooks.
-- Supply the input oxygen, temperature, salinity, and basin-mask datasets referenced by the selected workflow. These data are not included in the repository.
-- Provide the external `regridding_operations`, `fourier_transform`, and `basin_masks` modules imported from `Analysis/Python_functions/` by preprocessing scripts, or review whether those imports are needed for your use case.
+- Supply the input oxygen, temperature, salinity, and basin-mask datasets referenced by the selected workflow.
+- Provide the external `regridding_operations`, `fourier_transform`, and `basin_masks` modules imported from `Analysis/Python_functions/` by preprocessing scripts.
 - Update the Conda activation paths, working directories, account, resources, and log paths in Slurm scripts. Create their log directories before submission.
 
 ## Example commands
