@@ -4,6 +4,8 @@ Research scripts for reconstructing annual ocean oxygen fields using random fore
 
 This gap-filling framework is inspired by Ito et al. (2024), [*Mapping Dissolved Oxygen Concentrations by Combining Shipboard and Argo Observations Using Machine Learning Algorithms*](https://doi.org/10.1029/2024JH000272). This implementation includes enhancements and adaptations to the training procedure, reconstruction time periods, and historical data inputs, along with potential density predictors and workflows for CMIP6 experiments and EN4-based observational reconstructions. The workflow and setup below describe the implementation in this repository.
 
+The gap-filling framework is not limited to oxygen and can be extended to other biogeochemical (BGC) tracers by adapting the target observations, predictor variables, preprocessing, and validation to the tracer of interest. The scripts currently included in this repository implement oxygen reconstruction.
+
 ## Workflow
 
 1. **Preprocessing** forms annual means, computes potential density anomaly (`sigma0`), selects samples with finite oxygen and predictors, and saves vectors and five contiguous year blocks for cross-validation.
